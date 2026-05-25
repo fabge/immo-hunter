@@ -1,37 +1,39 @@
 db_path: ../data/listings.db
-llm_backend: cli
-llm_max_per_run: 30
-llm_model: claude-sonnet-4-6
 notify_threshold: 7
+llm_max_per_run: 5
+llm_backend: cli
+llm_model: claude-sonnet-4-6
+telegram:
+  bot_token: null
+  chat_id: null
 scrapers:
-  immoscout24:
-    enabled: false
+  kleinanzeigen:
+    enabled: true
     searches:
-    - is24_region_slug: baden-wuerttemberg/heidelberg-kreisfreie-stadt
-      max_pages: 2
+    - city: Heidelberg
+      radius_km: 20
+      max_pages: 3
+      min_price: 200000
+      max_price: 800000
+  immoscout24:
+    enabled: true
+    searches:
+    - lat: 49.3988
+      lon: 8.6724
+      radius_km: 20
       max_price: 800000
       min_sqm: 100
+      max_pages: 3
   immowelt:
     enabled: false
     searches:
     - immowelt_location_code: AD08DE6325
-      max_pages: 2
       max_price: 800000
       min_sqm: 100
-  kleinanzeigen:
-    enabled: false
-    searches:
-    - city: Heidelberg
-      max_pages: 3
-      max_price: 800000
-      min_price: 200000
-      radius_km: 20
+      max_pages: 2
   rss:
     enabled: false
     searches:
     - feeds:
-      - label: is24_sparalarm
-        url: https://www.immobilienscout24.de/Suche/Rss?searchID=PASTE_ID_HERE
-telegram:
-  bot_token: null
-  chat_id: null
+      - url: https://www.immobilienscout24.de/Suche/Rss?searchID=PASTE_ID_HERE
+        label: is24_sparalarm

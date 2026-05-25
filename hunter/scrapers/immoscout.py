@@ -1,115 +1,124 @@
-import re
+"""Immoscout24 scraper via the mobile-app API (api.mobile.immobilienscout24.de).
+
+The website is protected by DataDome captcha and is not reliably scrapable.
+The mobile API used by the IS24 phone app has no such gate. Approach borrowed
+from flathunter's immobilienscout crawler.
+"""
+import time
+import urllib.request
+import urllib.parse
 import json
 from typing import Iterable
 from ..models import Listing
 from .base import Scraper
-from ._playwright_util import browser_page
+
+
+API_URL = "https://api.mobile.immobilienscout24.de/search/list"
+HEADERS = {
+    "Connection": "keep-alive",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "User-Agent": "ImmoScout_27.3_26.0_._",
+}
 
 
 class ImmoscoutScraper(Scraper):
     name = "immoscout24"
 
     def fetch(self, search: dict) -> Iterable[Listing]:
-        region_slug = search.get("is24_region_slug")
-        if not region_slug:
-            print(
-                "[immoscout24] missing 'is24_region_slug' (e.g. 'baden-wuerttemberg/heidelberg-kreisfreie-stadt'); skip"
-            )
-            return
-
+        # radius search around a coordinate (default: Heidelberg Bismarckplatz)
+        lat = search.get("lat", 49.3988)
+        lon = search.get("lon", 8.6724)
+        radius = search.get("radius_km", 20)
         max_price = search.get("max_price", 1_000_000)
         min_sqm = search.get("min_sqm", 80)
         max_pages = search.get("max_pages", 2)
+        real_estate_type = search.get("realestatetype", "housebuy")
 
-        base = (
-            f"https://www.immobilienscout24.de/Suche/de/{region_slug}/haus-kaufen"
-            f"?price=-{max_price}&livingspace={min_sqm}-"
-            f"&sorting=2"  # newest first
+        params = {
+            "searchType": "radius",
+            "realEstateType": real_estate_type,
+            "geocoordinates": f"{lat};{lon};{float(radius)}",
+            "price": f"-{max_price}",
+            "livingspace": f"{float(min_sqm)}-",
+            "pagesize": 50,
+            "sorting": "-firstactivation",  # newest first
+        }
+
+        for page in range(1, max_pages + 1):
+            params["pagenumber"] = page
+            url = API_URL + "?" + urllib.parse.urlencode(params)
+            try:
+                data = self._post(url)
+            except Exception as e:
+                print(f"[immoscout24] api error page {page}: {e}")
+                break
+
+            items = [
+                i for i in (data.get("resultListItems") or [])
+                if i.get("type") == "EXPOSE_RESULT"
+            ]
+            if not items:
+                break
+            for it in items:
+                yield self._to_listing(it["item"])
+
+            paging = data.get("paging") or {}
+            if page >= (paging.get("numberOfPages") or max_pages):
+                break
+            time.sleep(1.0)
+
+    def _post(self, url: str) -> dict:
+        body = json.dumps({"supportedResultListType": [], "userData": {}}).encode()
+        req = urllib.request.Request(url, data=body, headers=HEADERS, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+
+    def _to_listing(self, x: dict) -> Listing:
+        eid = str(x.get("id"))
+        attrs = [a.get("value", "") for a in x.get("attributes", [])]
+        price = sqm = rooms = None
+        for a in attrs:
+            if "€" in a:
+                price = self._num(a)
+            elif "m²" in a:
+                sqm = self._fnum(a)
+            elif "Zi" in a:
+                rooms = self._fnum(a)
+        addr = x.get("address", {}).get("line", "")
+        plz = None
+        import re
+
+        m = re.search(r"\b(\d{5})\b", addr)
+        if m:
+            plz = m.group(1)
+        pic = x.get("titlePicture", {}).get("preview")
+        return Listing(
+            source=self.name,
+            source_id=eid,
+            url=f"https://www.immobilienscout24.de/expose/{eid}",
+            title=x.get("title", "") or "",
+            price_eur=price,
+            sqm=sqm,
+            rooms=rooms,
+            location=addr,
+            plz=plz,
+            image_url=pic,
+            raw={"attributes": attrs},
         )
 
-        with browser_page() as page:
-            for pn in range(1, max_pages + 1):
-                url = base + (f"&pagenumber={pn}" if pn > 1 else "")
-                try:
-                    page.goto(url, timeout=40000, wait_until="domcontentloaded")
-                    # accept cookie banner if present
-                    try:
-                        page.click(
-                            "button:has-text('Alle akzeptieren'), button:has-text('Akzeptieren')",
-                            timeout=2500,
-                        )
-                    except Exception:
-                        pass
-                    page.wait_for_timeout(3000)
-                    html = page.content()
-                except Exception as e:
-                    print(f"[immoscout24] error {url}: {e}")
-                    break
+    @staticmethod
+    def _num(s: str):
+        import re
 
-                items = self._extract(html)
-                if not items:
-                    break
-                for l in items:
-                    yield l
+        d = re.sub(r"[^\d]", "", s.split(",")[0])
+        return int(d) if d else None
 
-    def _extract(self, html: str) -> list[Listing]:
-        listings: list[Listing] = []
-        # Immoscout embeds JSON in IS24.resultList or window.IS24
-        m = re.search(r'resultListModel"\s*:\s*({.+?})\s*,\s*"breadcrumb"', html, re.DOTALL)
-        json_blob = None
-        if m:
-            try:
-                json_blob = json.loads(m.group(1))
-            except Exception:
-                json_blob = None
-        if json_blob:
-            entries = (
-                json_blob.get("searchResponseModel", {})
-                .get("resultlist.resultlist", {})
-                .get("resultlistEntries", [])
-            )
-            for entry_group in entries:
-                for r in entry_group.get("resultlistEntry", []):
-                    real = r.get("resultlist.realEstate") or {}
-                    eid = real.get("@id") or r.get("@id")
-                    if not eid:
-                        continue
-                    price = (real.get("price") or {}).get("value")
-                    addr = real.get("address") or {}
-                    listings.append(
-                        Listing(
-                            source=self.name,
-                            source_id=str(eid),
-                            url=f"https://www.immobilienscout24.de/expose/{eid}",
-                            title=real.get("title", "") or "",
-                            price_eur=int(price) if price else None,
-                            sqm=float(real.get("livingSpace") or 0) or None,
-                            rooms=float(real.get("numberOfRooms") or 0) or None,
-                            location=" ".join(
-                                str(addr.get(k, ""))
-                                for k in ("postcode", "city", "quarter")
-                                if addr.get(k)
-                            ).strip(),
-                            plz=addr.get("postcode"),
-                            raw=real,
-                        )
-                    )
-            return listings
+    @staticmethod
+    def _fnum(s: str):
+        import re
 
-        # Fallback: parse cards via HTML
-        for m in re.finditer(r'data-obid="(\d+)"([\s\S]{0,3000})', html):
-            eid, body = m.groups()
-            title_m = re.search(r'class="result-list-entry__brand-title"[^>]*>([^<]+)', body)
-            price_m = re.search(r"€\s*([\d.]+)", body)
-            sqm_m = re.search(r"([\d,]+)\s*m²", body)
-            listings.append(
-                Listing(
-                    source=self.name,
-                    source_id=eid,
-                    url=f"https://www.immobilienscout24.de/expose/{eid}",
-                    title=title_m.group(1).strip() if title_m else f"IS24 {eid}",
-                    price_eur=int(price_m.group(1).replace(".", "")) if price_m else None,
-                    sqm=float(sqm_m.group(1).replace(",", ".")) if sqm_m else None,
-                )
-            )
-        return listings
+        m = re.search(r"([\d.,]+)", s)
+        if not m:
+            return None
+        return float(m.group(1).replace(".", "").replace(",", "."))

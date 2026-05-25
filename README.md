@@ -48,7 +48,7 @@ hunter/
 
 ## LLM backend
 
-Default uses the `claude -p` CLI (Max subscription, free at point of use). The runner strips `ANTHROPIC_API_KEY` from the subprocess environment so the CLI falls back to its OAuth credentials.
+Default uses the `claude -p` CLI (Max subscription, free at point of use).
 
 Switch to direct API by setting `llm_backend: api` in config and providing a valid `ANTHROPIC_API_KEY`.
 
@@ -89,15 +89,23 @@ Load: `launchctl load ~/Library/LaunchAgents/com.fabian.immohunter.plist`
 
 ## Current status
 
-- [x] Kleinanzeigen scraper (stdlib, works)
+- [x] Kleinanzeigen scraper (stdlib, no browser, works — ~27/search in 20km radius)
+- [x] **Immoscout24 scraper via mobile-app API** (stdlib, no captcha, works — 1720 total hits, paginated)
 - [x] SQLite storage + dedup
-- [x] LLM filter (CLI backend)
+- [x] LLM filter (CLI backend, correctly rejects Mannheim/Bauträger/out-of-corridor)
 - [x] Telegram + console notifier
 - [x] Orchestrator CLI
-- [ ] Immowelt scraper (code written, needs `playwright install` + selector tuning against live HTML)
-- [ ] Immoscout24 scraper (code written, needs `playwright install` + cookie banner / captcha handling)
-- [ ] RSS feed for Immoscout Sparalarm (code written, needs user to paste actual feed URL)
+- [x] RSS reader for Immoscout Sparalarm (needs user to paste actual feed URL to enable)
+- [ ] Immowelt scraper — **blocked by DataDome on web + API**; needs undetected-chromedriver + cookie solving. Low priority (inventory overlaps IS24). Playwright code present but disabled.
+- [ ] Telegram bot setup (deferred)
+- [ ] launchd schedule (deferred)
 - [ ] Bausachverständigen-Liste integration (manual lookup, not automated)
+
+### Anti-bot reality (tested 2026-05-25)
+
+- **Kleinanzeigen**: plain HTTP works.
+- **Immoscout24 website**: serves DataDome "Ich bin kein Roboter" captcha to headless + stealth + headed Chromium. Not scrapable. **But** the mobile-app API (`api.mobile.immobilienscout24.de`) has no captcha — that's what we use.
+- **Immowelt**: DataDome on both web and backend API endpoints. No clean path.
 
 ## Comparing with flathunter
 

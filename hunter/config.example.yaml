@@ -29,18 +29,23 @@ scrapers:
         min_price: 200000
         max_price: 800000
 
-  immowelt:
-    enabled: false  # requires playwright install
+  immoscout24:
+    enabled: true  # uses the mobile-app API (api.mobile.immobilienscout24.de) - no captcha, stdlib only
     searches:
-      - immowelt_location_code: AD08DE6325  # placeholder - resolve via web
+      - lat: 49.3988      # Heidelberg Bismarckplatz
+        lon: 8.6724
+        radius_km: 20
         max_price: 800000
         min_sqm: 100
-        max_pages: 2
+        max_pages: 3
 
-  immoscout24:
-    enabled: false  # requires playwright install
+  immowelt:
+    # DISABLED: Immowelt is behind DataDome captcha on both web and API.
+    # No clean scrape path. Needs undetected-chromedriver + cookie solving.
+    # Low priority - inventory overlaps heavily with Immoscout24.
+    enabled: false
     searches:
-      - is24_region_slug: baden-wuerttemberg/heidelberg-kreisfreie-stadt
+      - immowelt_location_code: AD08DE6325
         max_price: 800000
         min_sqm: 100
         max_pages: 2

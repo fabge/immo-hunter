@@ -81,11 +81,9 @@ Antworte ausschließlich mit dem JSON-Objekt."""
 
 
 def _call_cli(prompt: str, model: str) -> str:
-    """Use `claude -p` CLI (Max subscription). Strips ANTHROPIC_API_KEY from env
-    so the CLI falls back to its own OAuth credentials."""
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    """Use `claude -p` CLI (Max subscription)."""
     cmd = ["claude", "-p", "--model", model, prompt]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
         raise RuntimeError(
             f"claude CLI failed (rc={res.returncode}): "

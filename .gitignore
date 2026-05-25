@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# upstream flathunter clone (not vendored)
+flathunter/src/

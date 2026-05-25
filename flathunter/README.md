@@ -30,10 +30,29 @@ Paste fully-configured search URLs (with all filters in the query string):
 
 flathunter handles polling + dedup + Telegram push out of the box. It does **not** do LLM filtering — that's our `hunter/` differentiator.
 
+## Test results (2026-05-25)
+
+Cloned + ran flathunter's crawlers directly against the HD corridor:
+
+| Crawler | Result | Notes |
+|---------|--------|-------|
+| **Kleinanzeigen** | ✓ 27 results | Works, but launches undetected-chromedriver (real headless Chrome) where our stdlib scraper needs no browser |
+| **Immobilienscout24** | ✗ `KeyError: 'totalResults'` | flathunter's mobile-API crawler is **stale against the current API response** (now nests paging under `paging.numberOfPages`, no top-level `totalResults`). Our `hunter/scrapers/immoscout.py` reimplements the same endpoint with defensive parsing and works. |
+| **Immowelt** | not run | Behind DataDome on web + API; flathunter relies on undetected-chromedriver, fragile |
+
+**Key insight borrowed:** flathunter's IS24 crawler revealed the mobile-app API
+(`api.mobile.immobilienscout24.de/search/list`, UA `ImmoScout_27.3_26.0_._`) which
+bypasses the website's DataDome captcha entirely. We adopted this in our own stack.
+
+Runtime deps: `pip install pyyaml requests lxml beautifulsoup4 selenium undetected-chromedriver
+webdriver-manager apprise jsonpath-ng backoff requests-random-user-agent ruamel.yaml prompt-toolkit`.
+The full `flathunt.py` loop also requires a configured notifier (telegram/apprise) or it raises
+`HeartbeatException`.
+
 ## Comparison strategy
 
 Run both in parallel for ~4 weeks:
-- flathunter pushes raw matches → high recall, lower precision
+- flathunter pushes raw matches → high recall, lower precision, no LLM filter
 - our `hunter/` pushes Score-7+ matches → lower recall, higher precision
 
 Compare:
@@ -41,3 +60,7 @@ Compare:
 - Genuine "worth a closer look" hit rate
 - False positives (Bauträger spam, out-of-corridor, etc.)
 - Latency from listing publication → notification
+
+Current verdict: our stack is lighter (no Chrome for Kleinanzeigen + IS24) and the LLM
+filter kills the Bauträger/Mannheim noise that flathunter would forward raw. Keep
+flathunter as a cross-check baseline.
