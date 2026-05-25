@@ -1,0 +1,135 @@
+"""LLM-based listing scorer using Claude API.
+
+Scores listings against the criteria in personal/where-to-live/CLAUDE.md:
+walkability, low traffic, ÖPNV, family-friendly, price/sqm, location within corridor.
+"""
+import json
+import os
+import re
+import sqlite3
+import subprocess
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_BACKEND = "cli"  # "cli" uses `claude -p`, "api" uses anthropic SDK
+
+SYSTEM_PROMPT = """Du bist ein Immobilien-Bewertungsassistent für Fabian & Sarah, die ein Haus im Heidelberger Raum kaufen wollen.
+
+KORRIDOR (akzeptiert, Reihenfolge ≈ Präferenz):
+- Heidelberg-Stadtteile (außer ggf. zu teure Altstadt/Neuenheim)
+- Ladenburg, Schriesheim, Dossenheim (Bergstraße)
+- Edingen-Neckarhausen, Eppelheim, Plankstadt (westlich, OEG-Anbindung)
+- Leimen, Nußloch, Sandhausen (südlich)
+- Neckargemünd, Bammental (Neckartal-Underdog)
+- Heddesheim, Weinheim (preiswerter Nordausgang)
+
+AUSGESCHLOSSEN:
+- Mannheim (alle Stadtteile) — "forbidden land"
+- Weiter weg als ~25km von HD Bismarckplatz
+- Reine Neubau-Bauträger-Inserate ("BAUEN OHNE EIGENKAPITAL", massa haus, etc.) — sales pitches, kein konkretes Objekt
+
+KRITERIEN (Priorität in Reihenfolge):
+1. Walkability + niedriges Verkehrsaufkommen (Ortskern fußläufig, keine B-Straße direkt am Haus)
+2. ÖPNV-Anbindung nach Heidelberg <25 Min (S-Bahn, OEG/RNV-Tram)
+3. Familienfreundlich, ruhige Wohnlage, ggf. Garten
+4. Preis-Leistung: 3.000-4.500€/m² gut, >5.500€/m² teuer, <2.500€/m² verdächtig (Sanierungsruine?)
+5. Charakter > Sterilität (Altbau/Bestand bevorzugt)
+
+BUDGET-RAHMEN:
+- Sweet Spot: 450-550K
+- Stretched max: 800K
+- Größe: 110-180m² Wohnfläche, 200-400m² Grundstück
+
+OUTPUT FORMAT (strikt JSON, kein Markdown):
+{
+  "score": <Integer 0-10>,
+  "reasoning": "<2-3 Sätze auf Deutsch, was spricht dafür/dagegen>",
+  "red_flags": "<Komma-separierte Liste oder leerer String>",
+  "in_corridor": <true|false>
+}
+
+Score-Skala:
+- 9-10: Perfekter Match, sofort ansehen
+- 7-8: Sehr interessant, weiter verfolgen
+- 5-6: Okay, evtl. Backup
+- 3-4: Schwächen, nur bei wenig Auswahl
+- 0-2: Falsch (außerhalb Korridor, Bauträger-Spam, Sanierungsruine, etc.)
+"""
+
+
+def _build_user_prompt(listing_row: sqlite3.Row) -> str:
+    ppsqm = (
+        f"{listing_row['price_eur'] / listing_row['sqm']:.0f} €/m²"
+        if listing_row["price_eur"] and listing_row["sqm"]
+        else "n/a"
+    )
+    return f"""Bewerte dieses Inserat:
+
+TITEL: {listing_row['title']}
+PREIS: {listing_row['price_eur'] or 'n/a'} €
+WOHNFLÄCHE: {listing_row['sqm'] or 'n/a'} m²
+ZIMMER: {listing_row['rooms'] or 'n/a'}
+PREIS/M²: {ppsqm}
+LAGE: {listing_row['location'] or 'n/a'}
+PLZ: {listing_row['plz'] or 'n/a'}
+QUELLE: {listing_row['source']}
+URL: {listing_row['url']}
+
+BESCHREIBUNG:
+{(listing_row['description'] or '')[:1500]}
+
+Antworte ausschließlich mit dem JSON-Objekt."""
+
+
+def _call_cli(prompt: str, model: str) -> str:
+    """Use `claude -p` CLI (Max subscription). Strips ANTHROPIC_API_KEY from env
+    so the CLI falls back to its own OAuth credentials."""
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    cmd = ["claude", "-p", "--model", model, prompt]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI failed (rc={res.returncode}): "
+            f"stderr={res.stderr.strip()[:300]} stdout={res.stdout.strip()[:300]}"
+        )
+    return res.stdout.strip()
+
+
+def _call_api(prompt: str, model: str) -> str:
+    import anthropic
+    client = anthropic.Anthropic()
+    resp = client.messages.create(
+        model=model,
+        max_tokens=600,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.content[0].text.strip()
+
+
+def evaluate_listing(
+    listing_row: sqlite3.Row,
+    model: str = DEFAULT_MODEL,
+    backend: str = DEFAULT_BACKEND,
+) -> dict:
+    prompt = _build_user_prompt(listing_row)
+    if backend == "cli":
+        # CLI doesn't take a system prompt flag the same way; prepend it.
+        full = SYSTEM_PROMPT + "\n\n---\n\n" + prompt
+        text = _call_cli(full, model)
+    else:
+        text = _call_api(prompt, model)
+    # Strip code fences if present
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]+\}", text)
+        if not m:
+            raise
+        data = json.loads(m.group(0))
+    return {
+        "score": int(data.get("score", 0)),
+        "reasoning": data.get("reasoning", "")[:500],
+        "red_flags": data.get("red_flags", "")[:300],
+        "in_corridor": bool(data.get("in_corridor", False)),
+    }

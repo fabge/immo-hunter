@@ -1,0 +1,54 @@
+# Copy to config.yaml and edit. config.yaml is gitignored.
+
+db_path: ../data/listings.db
+
+# Min score (0-10) for a listing to trigger a notification.
+notify_threshold: 7
+
+# Max LLM evaluations per run (cost control)
+llm_max_per_run: 40
+
+# LLM backend: "cli" uses `claude -p` (Max subscription, free at point of use),
+# "api" uses anthropic SDK (requires valid ANTHROPIC_API_KEY billed separately)
+llm_backend: cli
+llm_model: claude-sonnet-4-6
+
+telegram:
+  # Either set these or use env vars TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+  bot_token: null
+  chat_id: null
+
+# Search configurations. Each scraper gets one or more searches.
+scrapers:
+  kleinanzeigen:
+    enabled: true
+    searches:
+      - city: Heidelberg
+        radius_km: 20
+        max_pages: 3
+        min_price: 200000
+        max_price: 800000
+
+  immowelt:
+    enabled: false  # requires playwright install
+    searches:
+      - immowelt_location_code: AD08DE6325  # placeholder - resolve via web
+        max_price: 800000
+        min_sqm: 100
+        max_pages: 2
+
+  immoscout24:
+    enabled: false  # requires playwright install
+    searches:
+      - is24_region_slug: baden-wuerttemberg/heidelberg-kreisfreie-stadt
+        max_price: 800000
+        min_sqm: 100
+        max_pages: 2
+
+  rss:
+    enabled: false
+    searches:
+      - feeds:
+          # Paste your Immoscout Sparalarm RSS URL here after enabling RSS export in your saved search
+          - url: https://www.immobilienscout24.de/Suche/Rss?searchID=PASTE_ID_HERE
+            label: is24_sparalarm
