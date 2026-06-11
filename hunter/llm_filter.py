@@ -142,6 +142,35 @@ def _call_api(prompt: str, model: str) -> str:
     return resp.content[0].text.strip()
 
 
+class ModelChain:
+    """Try models in order (e.g. free model first, paid fallback second).
+
+    A model that fails `max_failures` times within this chain's lifetime
+    (one run) is skipped for the remaining listings, so a rate-limited
+    primary doesn't cost a doomed call per listing.
+    """
+
+    def __init__(self, models: list[str], max_failures: int = 2):
+        self.models = list(models)
+        self.failures = {m: 0 for m in self.models}
+        self.max_failures = max_failures
+
+    def active(self) -> list[str]:
+        return [m for m in self.models if self.failures[m] < self.max_failures]
+
+    def call(self, fn):
+        """fn(model) -> result; returns (model, result) of the first success."""
+        last_err = None
+        for model in self.active():
+            try:
+                return model, fn(model)
+            except Exception as e:
+                self.failures[model] += 1
+                last_err = e
+                print(f"  ! model {model} failed ({self.failures[model]}/{self.max_failures}): {e}")
+        raise last_err if last_err else RuntimeError("no models left in chain")
+
+
 def evaluate_listing(
     listing_row,
     model: str = DEFAULT_MODEL,

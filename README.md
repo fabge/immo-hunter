@@ -70,6 +70,12 @@ config.yaml stays host-neutral:
   `deepseek-v4-pro`), a LiteLLM proxy, OpenRouter, or local Ollama. Key goes in
   the `LLM_API_KEY` env var. This is what the Docker deployment uses.
 
+`llm_model` / `LLM_MODEL` accepts a **fallback chain** (comma-separated, primary
+first): `LLM_MODEL=deepseek-v4-flash-free,glm-5.1` runs Zen's free model and
+falls back to the paid one when it errors or rate-limits. A model that fails
+twice in a run is skipped for the rest of that run; if all models fail, the
+remaining listings stay unevaluated and are retried next cycle.
+
 ## Telegram setup
 
 1. Open Telegram, message [@BotFather](https://t.me/botfather), `/newbot`, follow prompts → get bot token.

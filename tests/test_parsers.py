@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from hunter.models import Listing
+from hunter.llm_filter import ModelChain
 from hunter.run import llm_settings
 from hunter.storage import Storage
 from hunter.notifier import format_listing
@@ -188,21 +189,63 @@ class LlmSettingsTest(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {}, clear=True)
     def test_config_defaults(self):
-        self.assertEqual(llm_settings(self.CONFIG), ("cli", "claude-sonnet-4-6", ""))
+        self.assertEqual(llm_settings(self.CONFIG), ("cli", ["claude-sonnet-4-6"], ""))
 
     @mock.patch.dict(
         os.environ,
         {
             "LLM_BACKEND": "openai",
-            "LLM_MODEL": "glm-5.1",
+            "LLM_MODEL": "deepseek-v4-flash-free, glm-5.1",
             "LLM_BASE_URL": "https://opencode.ai/zen/v1",
         },
     )
-    def test_env_overrides_config(self):
+    def test_env_overrides_config_with_chain(self):
         self.assertEqual(
             llm_settings(self.CONFIG),
-            ("openai", "glm-5.1", "https://opencode.ai/zen/v1"),
+            ("openai", ["deepseek-v4-flash-free", "glm-5.1"], "https://opencode.ai/zen/v1"),
         )
+
+    @mock.patch.dict(os.environ, {}, clear=True)
+    def test_yaml_list_chain(self):
+        backend, models, _ = llm_settings({"llm_model": ["free-model", "paid-model"]})
+        self.assertEqual(models, ["free-model", "paid-model"])
+
+
+class ModelChainTest(unittest.TestCase):
+    def test_falls_back_on_failure(self):
+        def fn(model):
+            if model == "free":
+                raise RuntimeError("rate limited")
+            return {"score": 7}
+
+        chain = ModelChain(["free", "paid"])
+        model, result = chain.call(fn)
+        self.assertEqual(model, "paid")
+        self.assertEqual(result["score"], 7)
+
+    def test_primary_skipped_after_max_failures(self):
+        calls = []
+
+        def fn(model):
+            calls.append(model)
+            if model == "free":
+                raise RuntimeError("rate limited")
+            return {}
+
+        chain = ModelChain(["free", "paid"], max_failures=2)
+        chain.call(fn)  # free fails (1), paid succeeds
+        chain.call(fn)  # free fails (2), paid succeeds
+        chain.call(fn)  # free now skipped entirely
+        self.assertEqual(calls, ["free", "paid", "free", "paid", "paid"])
+
+    def test_raises_when_all_exhausted(self):
+        def fn(model):
+            raise RuntimeError("down")
+
+        chain = ModelChain(["a", "b"], max_failures=1)
+        with self.assertRaises(RuntimeError):
+            chain.call(fn)
+        self.assertEqual(chain.active(), [])
 
 
 class NotifierFormatTest(unittest.TestCase):

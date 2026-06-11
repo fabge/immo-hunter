@@ -17,9 +17,12 @@ llm_max_per_run: 40
 #              Needs llm_base_url + LLM_API_KEY env var.
 # Env vars LLM_BACKEND / LLM_MODEL / LLM_BASE_URL override these, so this
 # tracked file stays host-neutral (Mac runs cli, Docker injects openai).
+# llm_model is a fallback chain (comma-separated or YAML list): first entry
+# is primary (e.g. a free Zen model), later ones are tried when it fails.
+# A model failing twice in one run is skipped for the rest of that run.
 llm_backend: cli
 llm_model: claude-sonnet-4-6
-# llm_base_url: https://opencode.ai/zen/v1   # for llm_backend: openai (Zen model ids: glm-5.1, kimi-k2.5, deepseek-v4-pro, ...)
+# llm_base_url: https://opencode.ai/zen/v1   # for llm_backend: openai (Zen model ids: glm-5.1, kimi-k2.5, deepseek-v4-pro, *-free rotation)
 
 # Minutes between runs in --loop mode (long-running Docker container).
 # Env var RUN_INTERVAL_MINUTES overrides.

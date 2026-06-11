@@ -20,7 +20,7 @@ from .scrapers.kleinanzeigen import KleinanzeigenScraper
 from .scrapers.immowelt import ImmoweltScraper
 from .scrapers.immoscout import ImmoscoutScraper, fetch_expose_description
 from .scrapers.rss import RssScraper
-from .llm_filter import evaluate_listing
+from .llm_filter import evaluate_listing, ModelChain
 from .notifier import notify, send_alert
 
 
@@ -95,13 +95,24 @@ def run_scraping(config: dict, storage: Storage) -> tuple[int, int]:
     return total_seen, total_new
 
 
-def llm_settings(config: dict) -> tuple[str, str, str]:
-    """(backend, model, base_url) — env vars override config so the tracked
-    config.yaml can stay host-neutral (Mac uses cli, Docker sets LLM_BACKEND)."""
+def _parse_models(value) -> list[str]:
+    """Accept a YAML list or comma-separated string; order = fallback order."""
+    if isinstance(value, list):
+        return [str(m).strip() for m in value if str(m).strip()]
+    return [m.strip() for m in str(value).split(",") if m.strip()]
+
+
+def llm_settings(config: dict) -> tuple[str, list[str], str]:
+    """(backend, models, base_url) — env vars override config so the tracked
+    config.yaml can stay host-neutral (Mac uses cli, Docker sets LLM_BACKEND).
+    `models` is a fallback chain: first entry is primary (e.g. a free model),
+    later entries are tried when it fails."""
     backend = os.environ.get("LLM_BACKEND") or config.get("llm_backend", "cli")
-    model = os.environ.get("LLM_MODEL") or config.get("llm_model", "claude-sonnet-4-6")
+    models = _parse_models(
+        os.environ.get("LLM_MODEL") or config.get("llm_model", "claude-sonnet-4-6")
+    )
     base_url = os.environ.get("LLM_BASE_URL") or config.get("llm_base_url", "")
-    return backend, model, base_url
+    return backend, models, base_url
 
 
 def run_llm(config: dict, storage: Storage) -> int:
@@ -110,7 +121,8 @@ def run_llm(config: dict, storage: Storage) -> int:
         print("[llm] nothing to evaluate")
         return 0
     print(f"\n[llm] evaluating {len(rows)} listings")
-    backend, model, base_url = llm_settings(config)
+    backend, models, base_url = llm_settings(config)
+    chain = ModelChain(models)
     evaluated = 0
     for row in rows:
         row = dict(row)
@@ -125,7 +137,9 @@ def run_llm(config: dict, storage: Storage) -> int:
             except Exception as e:
                 print(f"  ! {row['uid']} expose fetch failed: {e}")
         try:
-            result = evaluate_listing(row, model=model, backend=backend, base_url=base_url)
+            model, result = chain.call(
+                lambda m: evaluate_listing(row, model=m, backend=backend, base_url=base_url)
+            )
             storage.save_evaluation(
                 row["uid"],
                 result["score"],
@@ -135,11 +149,14 @@ def run_llm(config: dict, storage: Storage) -> int:
             )
             evaluated += 1
             print(
-                f"  · {row['uid']:<45} score={result['score']:>2}  "
+                f"  · {row['uid']:<45} score={result['score']:>2} [{model}] "
                 f"{result['reasoning'][:70]}"
             )
         except Exception as e:
             print(f"  ! {row['uid']} llm error: {e}")
+            if not chain.active():
+                print("[llm] all models exhausted, stopping this run")
+                break
     return evaluated
 
 
