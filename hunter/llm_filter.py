@@ -123,6 +123,7 @@ def _call_openai(prompt: str, model: str, base_url: str) -> str:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "immo-hunter/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=120) as r:
