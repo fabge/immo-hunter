@@ -128,7 +128,8 @@ def _call_openai(prompt: str, model: str, base_url: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=120) as r:
         data = json.loads(r.read())
-    return data["choices"][0]["message"]["content"].strip()
+    msg = data["choices"][0]["message"]
+    return (msg.get("content") or msg.get("reasoning_content") or "").strip()
 
 
 def _call_api(prompt: str, model: str) -> str:
