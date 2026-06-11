@@ -110,7 +110,7 @@ def _call_openai(prompt: str, model: str, base_url: str) -> str:
     body = json.dumps(
         {
             "model": model,
-            "max_tokens": 4000,
+            "max_tokens": 8000,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -129,10 +129,7 @@ def _call_openai(prompt: str, model: str, base_url: str) -> str:
     with urllib.request.urlopen(req, timeout=120) as r:
         data = json.loads(r.read())
     msg = data["choices"][0]["message"]
-    text = (msg.get("content") or "").strip()
-    if not text:
-        raise RuntimeError(f"model returned empty content (reasoning: {msg.get('reasoning_content', '')[:200]})")
-    return text
+    return (msg.get("content") or "").strip()
 
 
 def _call_api(prompt: str, model: str) -> str:
