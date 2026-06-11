@@ -1,7 +1,6 @@
 import sqlite3
 import json
 from pathlib import Path
-from typing import Optional
 from .models import Listing
 
 
@@ -26,6 +25,7 @@ CREATE TABLE IF NOT EXISTS listings (
     llm_score INTEGER,
     llm_reasoning TEXT,
     llm_red_flags TEXT,
+    llm_in_corridor INTEGER,
     llm_evaluated_at TEXT,
     notified_at TEXT,
     dismissed INTEGER DEFAULT 0
@@ -36,6 +36,11 @@ CREATE INDEX IF NOT EXISTS idx_notified ON listings(notified_at);
 CREATE INDEX IF NOT EXISTS idx_score ON listings(llm_score);
 """
 
+# Columns added after the initial schema; applied to pre-existing DBs.
+MIGRATIONS = [
+    "ALTER TABLE listings ADD COLUMN llm_in_corridor INTEGER",
+]
+
 
 class Storage:
     def __init__(self, db_path: str):
@@ -43,19 +48,58 @@ class Storage:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        for stmt in MIGRATIONS:
+            try:
+                self.conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.conn.commit()
 
-    def upsert(self, listing: Listing) -> bool:
-        """Insert listing if new. Returns True if newly inserted."""
-        cur = self.conn.execute("SELECT uid FROM listings WHERE uid = ?", (listing.uid,))
-        exists = cur.fetchone() is not None
-        if exists:
+    def upsert(self, listing: Listing) -> str:
+        """Insert or refresh a listing. Returns "new", "changed", or "seen".
+
+        "changed" means the content hash (title/price/sqm/location) differs
+        from the stored row — e.g. a price drop. The row is updated and its
+        evaluation/notification state reset so it gets re-scored and,
+        if it still clears the threshold, re-pushed.
+        """
+        cur = self.conn.execute(
+            "SELECT content_hash FROM listings WHERE uid = ?", (listing.uid,)
+        )
+        row = cur.fetchone()
+        new_hash = listing.content_hash()
+        if row is not None:
+            if row["content_hash"] == new_hash:
+                self.conn.execute(
+                    "UPDATE listings SET last_seen = CURRENT_TIMESTAMP WHERE uid = ?",
+                    (listing.uid,),
+                )
+                self.conn.commit()
+                return "seen"
             self.conn.execute(
-                "UPDATE listings SET last_seen = CURRENT_TIMESTAMP WHERE uid = ?",
-                (listing.uid,),
+                """UPDATE listings SET
+                   title = ?, price_eur = ?, sqm = ?, rooms = ?, location = ?, plz = ?,
+                   description = ?, image_url = ?, content_hash = ?, raw_json = ?,
+                   last_seen = CURRENT_TIMESTAMP,
+                   llm_score = NULL, llm_reasoning = NULL, llm_red_flags = NULL,
+                   llm_in_corridor = NULL, llm_evaluated_at = NULL, notified_at = NULL
+                   WHERE uid = ?""",
+                (
+                    listing.title,
+                    listing.price_eur,
+                    listing.sqm,
+                    listing.rooms,
+                    listing.location,
+                    listing.plz,
+                    listing.description,
+                    listing.image_url,
+                    new_hash,
+                    json.dumps(listing.raw, ensure_ascii=False),
+                    listing.uid,
+                ),
             )
             self.conn.commit()
-            return False
+            return "changed"
         self.conn.execute(
             """INSERT INTO listings
             (uid, source, source_id, url, title, price_eur, sqm, rooms, location, plz,
@@ -74,12 +118,12 @@ class Storage:
                 listing.plz,
                 listing.description,
                 listing.image_url,
-                listing.content_hash(),
+                new_hash,
                 json.dumps(listing.raw, ensure_ascii=False),
             ),
         )
         self.conn.commit()
-        return True
+        return "new"
 
     def unevaluated(self, limit: int = 50) -> list[sqlite3.Row]:
         cur = self.conn.execute(
@@ -88,18 +132,35 @@ class Storage:
         )
         return cur.fetchall()
 
-    def save_evaluation(self, uid: str, score: int, reasoning: str, red_flags: str):
+    def update_description(self, uid: str, description: str):
+        """Enrich a listing with detail text fetched after the list scrape."""
+        self.conn.execute(
+            "UPDATE listings SET description = ? WHERE uid = ?", (description, uid)
+        )
+        self.conn.commit()
+
+    def save_evaluation(
+        self, uid: str, score: int, reasoning: str, red_flags: str, in_corridor: bool
+    ):
         self.conn.execute(
             """UPDATE listings SET llm_score = ?, llm_reasoning = ?, llm_red_flags = ?,
-               llm_evaluated_at = CURRENT_TIMESTAMP WHERE uid = ?""",
-            (score, reasoning, red_flags, uid),
+               llm_in_corridor = ?, llm_evaluated_at = CURRENT_TIMESTAMP WHERE uid = ?""",
+            (score, reasoning, red_flags, int(in_corridor), uid),
         )
         self.conn.commit()
 
     def pending_notification(self, min_score: int) -> list[sqlite3.Row]:
+        # The NOT EXISTS clause skips cross-source duplicates: same house
+        # (identical title/price/sqm/location hash) already pushed under
+        # another uid.
         cur = self.conn.execute(
-            """SELECT * FROM listings
+            """SELECT * FROM listings l
                WHERE llm_score >= ? AND notified_at IS NULL AND dismissed = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM listings o
+                   WHERE o.content_hash = l.content_hash
+                     AND o.uid != l.uid AND o.notified_at IS NOT NULL
+               )
                ORDER BY llm_score DESC, first_seen DESC""",
             (min_score,),
         )

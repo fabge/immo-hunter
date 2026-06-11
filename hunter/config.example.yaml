@@ -1,4 +1,5 @@
-# Copy to config.yaml and edit. config.yaml is gitignored.
+# Copy to config.yaml and edit. config.yaml is tracked — keep secrets out of
+# it; telegram creds belong in .env (repo root, gitignored), see .env.example.
 
 db_path: ../data/listings.db
 
@@ -8,15 +9,21 @@ notify_threshold: 7
 # Max LLM evaluations per run (cost control)
 llm_max_per_run: 40
 
-# LLM backend: "cli" uses `claude -p` (Max subscription, free at point of use),
-# "api" uses anthropic SDK (requires valid ANTHROPIC_API_KEY billed separately)
+# LLM backend:
+#   "cli"    — `claude -p` (Max subscription, free at point of use; needs claude CLI)
+#   "api"    — anthropic SDK (ANTHROPIC_API_KEY)
+#   "openai" — any OpenAI-compatible /chat/completions endpoint:
+#              OpenCode Zen, LiteLLM proxy, OpenRouter, Ollama, ...
+#              Needs llm_base_url + LLM_API_KEY env var.
+# Env vars LLM_BACKEND / LLM_MODEL / LLM_BASE_URL override these, so this
+# tracked file stays host-neutral (Mac runs cli, Docker injects openai).
 llm_backend: cli
 llm_model: claude-sonnet-4-6
+# llm_base_url: https://opencode.ai/zen/v1   # for llm_backend: openai (Zen model ids: glm-5.1, kimi-k2.5, deepseek-v4-pro, ...)
 
-telegram:
-  # Either set these or use env vars TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
-  bot_token: null
-  chat_id: null
+# Minutes between runs in --loop mode (long-running Docker container).
+# Env var RUN_INTERVAL_MINUTES overrides.
+run_interval_minutes: 30
 
 # Search configurations. Each scraper gets one or more searches.
 scrapers:

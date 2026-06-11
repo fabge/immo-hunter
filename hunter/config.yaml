@@ -3,9 +3,7 @@ notify_threshold: 7
 llm_max_per_run: 5
 llm_backend: cli
 llm_model: claude-sonnet-4-6
-telegram:
-  bot_token: null
-  chat_id: null
+# telegram creds live in .env (repo root), not here — this file is tracked.
 scrapers:
   kleinanzeigen:
     enabled: true

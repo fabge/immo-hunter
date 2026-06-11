@@ -4,22 +4,49 @@ The website is protected by DataDome captcha and is not reliably scrapable.
 The mobile API used by the IS24 phone app has no such gate. Approach borrowed
 from flathunter's immobilienscout crawler.
 """
+import re
 import time
 import urllib.request
 import urllib.parse
 import json
-from typing import Iterable
+from typing import Iterable, Optional
 from ..models import Listing
 from .base import Scraper
 
 
 API_URL = "https://api.mobile.immobilienscout24.de/search/list"
+EXPOSE_URL = "https://api.mobile.immobilienscout24.de/expose/{id}"
 HEADERS = {
     "Connection": "keep-alive",
     "Content-Type": "application/json",
     "Accept": "application/json",
     "User-Agent": "ImmoScout_27.3_26.0_._",
 }
+
+
+def fetch_expose_description(expose_id: str) -> str:
+    """Fetch detail text for one expose from the mobile API.
+
+    The list endpoint returns no description, so the LLM would otherwise
+    score IS24 listings on title/price/location alone. The expose endpoint
+    carries TEXT_AREA sections (Objektbeschreibung, Ausstattung, Lage, ...).
+    """
+    url = EXPOSE_URL.format(id=urllib.parse.quote(str(expose_id)))
+    req = urllib.request.Request(
+        url, headers={k: v for k, v in HEADERS.items() if k != "Content-Type"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read())
+    return extract_expose_text(data)
+
+
+def extract_expose_text(data: dict) -> str:
+    parts = []
+    for section in data.get("sections") or []:
+        if section.get("type") == "TEXT_AREA" and section.get("text"):
+            title = section.get("title") or ""
+            parts.append(f"{title}:\n{section['text']}" if title else section["text"])
+    return "\n\n".join(parts)[:4000]
 
 
 class ImmoscoutScraper(Scraper):
@@ -86,12 +113,8 @@ class ImmoscoutScraper(Scraper):
             elif "Zi" in a:
                 rooms = self._fnum(a)
         addr = x.get("address", {}).get("line", "")
-        plz = None
-        import re
-
         m = re.search(r"\b(\d{5})\b", addr)
-        if m:
-            plz = m.group(1)
+        plz = m.group(1) if m else None
         pic = x.get("titlePicture", {}).get("preview")
         return Listing(
             source=self.name,
@@ -108,16 +131,12 @@ class ImmoscoutScraper(Scraper):
         )
 
     @staticmethod
-    def _num(s: str):
-        import re
-
+    def _num(s: str) -> Optional[int]:
         d = re.sub(r"[^\d]", "", s.split(",")[0])
         return int(d) if d else None
 
     @staticmethod
-    def _fnum(s: str):
-        import re
-
+    def _fnum(s: str) -> Optional[float]:
         m = re.search(r"([\d.,]+)", s)
         if not m:
             return None

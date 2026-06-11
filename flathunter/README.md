@@ -5,7 +5,7 @@
 ## Setup
 
 ```bash
-cd /Users/fabian/code/immo-hunter/flathunter
+cd /Users/fabian/code/fabge/immo-hunter/flathunter
 git clone https://github.com/flathunters/flathunter.git src
 cd src
 pip install pipenv

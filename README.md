@@ -11,14 +11,17 @@ Background and strategy: `/Users/fabian/code/notes/personal/where-to-live/house-
 ## Quickstart (own stack)
 
 ```bash
-cd /Users/fabian/code/immo-hunter
+cd /Users/fabian/code/fabge/immo-hunter
 pip install -r hunter/requirements.txt
 
 # Optional, only if enabling immowelt/immoscout scrapers:
 pip install playwright && playwright install chromium
 
 cp hunter/config.example.yaml hunter/config.yaml
-# edit hunter/config.yaml: enable scrapers, set telegram creds, tweak budget/region
+# edit hunter/config.yaml: enable scrapers, tweak budget/region
+
+cp .env.example .env
+# fill in telegram creds (.env is gitignored; config.yaml is tracked and holds no secrets)
 
 python -m hunter.run --config config.yaml
 ```
@@ -28,40 +31,78 @@ CLI flags:
 - `--skip-llm` — only scrape (useful for first-time discovery without LLM cost)
 - `--skip-notify` — eval but don't push
 - `--stats` — print per-source listing counts
+- `--loop` — run forever, sleeping `RUN_INTERVAL_MINUTES` (default 30) between runs; Docker mode
 
 ## Architecture
 
 ```
 hunter/
 ├── models.py            Listing dataclass
-├── storage.py           SQLite, dedup by uid (source:source_id)
+├── storage.py           SQLite; dedup by uid, change detection via content_hash
 ├── scrapers/
 │   ├── base.py
 │   ├── kleinanzeigen.py    stdlib HTTP, works out of the box
-│   ├── immowelt.py         Playwright (heavy bot detection)
-│   ├── immoscout.py        Playwright (heavy bot detection)
+│   ├── immowelt.py         Playwright (blocked by DataDome, disabled)
+│   ├── immoscout.py        IS24 mobile-app API (stdlib, incl. expose details)
 │   └── rss.py              Immoscout24 Sparalarm feeds
 ├── llm_filter.py        Claude scoring (CLI or API backend)
-├── notifier.py          Telegram + console fallback
+├── notifier.py          Telegram (HTML) + console fallback + ops alerts
 └── run.py               Orchestrator CLI
+tests/                   Parser/storage fixture tests: python -m unittest discover -s tests
 ```
+
+Pipeline behaviors worth knowing:
+- A changed listing (e.g. **price drop**) is detected via content hash, re-scored, and re-pushed.
+- IS24 listings get their **expose description fetched** at evaluation time (the list API has none).
+- An enabled scraper yielding **0 listings triggers a Telegram alert** (likely parser breakage).
+- A failed Telegram push stays pending and is **retried next run**; the same house seen on two portals is only pushed once.
 
 ## LLM backend
 
-Default uses the `claude -p` CLI (Max subscription, free at point of use).
+Three backends, selectable via `llm_backend` in config — or the `LLM_BACKEND` /
+`LLM_MODEL` / `LLM_BASE_URL` env vars, which override config so the tracked
+config.yaml stays host-neutral:
 
-Switch to direct API by setting `llm_backend: api` in config and providing a valid `ANTHROPIC_API_KEY`.
+- `cli` (Mac default) — `claude -p` CLI, free at point of use on the Max subscription.
+- `api` — anthropic SDK with `ANTHROPIC_API_KEY`.
+- `openai` — any OpenAI-compatible `/chat/completions` endpoint, stdlib only:
+  OpenCode Zen (`https://opencode.ai/zen/v1`, models like `glm-5.1`, `kimi-k2.5`,
+  `deepseek-v4-pro`), a LiteLLM proxy, OpenRouter, or local Ollama. Key goes in
+  the `LLM_API_KEY` env var. This is what the Docker deployment uses.
 
 ## Telegram setup
 
 1. Open Telegram, message [@BotFather](https://t.me/botfather), `/newbot`, follow prompts → get bot token.
 2. Start a chat with your new bot, send any message.
 3. Get your chat ID: `curl "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[0].message.chat.id'`
-4. Put both in `config.yaml` under `telegram:` or export as `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
+4. Put both in `.env` at the repo root as `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (see `.env.example`). Loaded by `run.py` itself, so it works under launchd too.
 
 Console fallback works when telegram creds are missing — useful for dev.
 
-## Scheduling
+## Deployment: Docker on terra (primary)
+
+Long-running container, scraping every 30 min. Service is defined in
+`setup/terra/docker-compose.yml` following the `pa` pattern: image built from
+the repo, repo bind-mounted over `/app` so config edits and the SQLite DB
+(`data/listings.db`) live on the host and survive rebuilds.
+
+On terra:
+
+```bash
+git clone git@github.com:fabge/immo-hunter.git ~/config/immo-hunter
+# add IMMO_TELEGRAM_BOT_TOKEN, IMMO_TELEGRAM_CHAT_ID, OPENCODE_API_KEY to ~/.env
+docker compose up -d --build immo-hunter
+docker logs -f immo-hunter
+```
+
+LLM config is injected via env (`LLM_BACKEND=openai`, OpenCode Zen base URL,
+`LLM_MODEL=glm-5.1`) — swap models/providers by editing the compose env, no
+code or config.yaml change. Update flow: `cd ~/config/immo-hunter && git pull`,
+then `docker compose up -d --build immo-hunter` (rebuild only needed when
+requirements.txt changes; a restart picks up code changes since the repo is
+bind-mounted).
+
+## Scheduling (alternative: launchd on Mac)
 
 Local launchd plist (runs every 30 min when Mac is awake):
 
@@ -77,10 +118,10 @@ Local launchd plist (runs every 30 min when Mac is awake):
     <string>-m</string>
     <string>hunter.run</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/fabian/code/immo-hunter</string>
+  <key>WorkingDirectory</key><string>/Users/fabian/code/fabge/immo-hunter</string>
   <key>StartInterval</key><integer>1800</integer>
-  <key>StandardOutPath</key><string>/Users/fabian/code/immo-hunter/logs/run.log</string>
-  <key>StandardErrorPath</key><string>/Users/fabian/code/immo-hunter/logs/run.err.log</string>
+  <key>StandardOutPath</key><string>/Users/fabian/code/fabge/immo-hunter/logs/run.log</string>
+  <key>StandardErrorPath</key><string>/Users/fabian/code/fabge/immo-hunter/logs/run.err.log</string>
 </dict>
 </plist>
 ```
@@ -96,6 +137,10 @@ Load: `launchctl load ~/Library/LaunchAgents/com.fabian.immohunter.plist`
 - [x] Telegram + console notifier
 - [x] Orchestrator CLI
 - [x] RSS reader for Immoscout Sparalarm (needs user to paste actual feed URL to enable)
+- [x] IS24 expose-detail fetch (description/Lage/Ausstattung for LLM scoring)
+- [x] Price-drop detection + re-notify (content_hash)
+- [x] Zero-result scraper alerts (parser-breakage detection)
+- [x] Parser/storage test suite (`python -m unittest discover -s tests`)
 - [ ] Immowelt scraper — **blocked by DataDome on web + API**; needs undetected-chromedriver + cookie solving. Low priority (inventory overlaps IS24). Playwright code present but disabled.
 - [ ] Telegram bot setup (deferred)
 - [ ] launchd schedule (deferred)
